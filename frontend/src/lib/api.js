@@ -5,10 +5,17 @@ export const API = `${BACKEND_URL}/api`;
 
 const SESSION_KEY = "unlockvault_session";
 
+function randomId() {
+  if (crypto.randomUUID) return crypto.randomUUID();
+  const a = new Uint8Array(16);
+  crypto.getRandomValues(a);
+  return Array.from(a, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 export function getSessionId() {
   let id = localStorage.getItem(SESSION_KEY);
   if (!id) {
-    id = (crypto.randomUUID && crypto.randomUUID()) || `${Date.now()}-${Math.random()}`;
+    id = randomId();
     localStorage.setItem(SESSION_KEY, id);
   }
   return id;

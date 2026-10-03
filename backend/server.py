@@ -5,6 +5,7 @@ from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import io
+import re
 import zipfile
 import logging
 import tempfile
@@ -13,6 +14,7 @@ from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Optional
 import uuid
 from datetime import datetime, timezone
+from urllib.parse import quote
 
 import requests
 import pikepdf
@@ -76,6 +78,34 @@ api_router = APIRouter(prefix="/api")
 
 PDF_EXT = {'.pdf'}
 EXCEL_EXT = {'.xlsx', '.xls', '.xlsm', '.xlsb'}
+ALLOWED_EXT = PDF_EXT | EXCEL_EXT
+
+SID_RE = re.compile(r'^[A-Za-z0-9_-]{8,64}$')
+MAX_FILE_BYTES = 50 * 1024 * 1024  # 50 MB per file
+MAX_FILES = 100
+
+
+def check_sid(sid: str):
+    if not sid or not SID_RE.match(sid):
+        raise HTTPException(status_code=400, detail="Invalid session id")
+
+
+def safe_filename(name: str) -> str:
+    name = os.path.basename(name or "file")
+    name = name.replace('"', '').replace('\r', '').replace('\n', '').strip()
+    return name or "file"
+
+
+async def read_capped(up: UploadFile) -> bytes:
+    data = b''
+    while True:
+        chunk = await up.read(1024 * 1024)
+        if not chunk:
+            break
+        data += chunk
+        if len(data) > MAX_FILE_BYTES:
+            raise HTTPException(status_code=413, detail="File exceeds the 50MB limit")
+    return data
 
 
 def now_iso():
@@ -213,11 +243,16 @@ async def root():
 
 @api_router.post("/upload")
 async def upload_files(session_id: str = Form(...), files: List[UploadFile] = File(...)):
+    check_sid(session_id)
+    if len(files) > MAX_FILES:
+        raise HTTPException(status_code=400, detail=f"Too many files (max {MAX_FILES} per upload)")
     results = []
     for up in files:
         ext = Path(up.filename).suffix.lower()
+        if ext not in ALLOWED_EXT:
+            raise HTTPException(status_code=400, detail=f"Unsupported file type: {ext or 'unknown'}")
         ftype = file_type_for(ext)
-        content = await up.read()
+        content = await read_capped(up)
         tmp = temp_from_bytes(content, ext)
         try:
             encrypted = detect_encrypted(tmp, ftype)
@@ -238,12 +273,14 @@ async def upload_files(session_id: str = Form(...), files: List[UploadFile] = Fi
 
 @api_router.get("/files/{session_id}")
 async def list_files(session_id: str):
+    check_sid(session_id)
     docs = await db.files.find({"session_id": session_id}).sort("created_at", 1).to_list(1000)
     return {"files": [public_file(d) for d in docs]}
 
 
 @api_router.post("/match-passwords")
 async def match_passwords(req: MatchRequest):
+    check_sid(req.session_id)
     pws = [p.strip() for p in req.passwords if p.strip()]
     docs = await db.files.find({"session_id": req.session_id}).to_list(1000)
     matched_count = 0
@@ -271,6 +308,7 @@ async def match_passwords(req: MatchRequest):
 
 @api_router.post("/unlock")
 async def unlock(req: UnlockRequest):
+    check_sid(req.session_id)
     unlocked = 0
     errors = []
     for fid in req.file_ids:
@@ -286,7 +324,7 @@ async def unlock(req: UnlockRequest):
             unlocked += 1
         except Exception as e:
             logging.exception("unlock failed")
-            errors.append({"id": fid, "error": str(e)})
+            errors.append({"id": fid, "error": "Failed to unlock file"})
             await db.files.update_one({"id": fid}, {"$set": {"status": "error"}})
         finally:
             os.unlink(tmp)
@@ -296,6 +334,7 @@ async def unlock(req: UnlockRequest):
 
 @api_router.delete("/file/{session_id}/{file_id}")
 async def delete_file(session_id: str, file_id: str):
+    check_sid(session_id)
     d = await db.files.find_one({"id": file_id, "session_id": session_id})
     if not d:
         raise HTTPException(status_code=404, detail="File not found")
@@ -305,18 +344,22 @@ async def delete_file(session_id: str, file_id: str):
 
 @api_router.post("/delete-bulk")
 async def delete_bulk(req: UnlockRequest):
+    check_sid(req.session_id)
     res = await db.files.delete_many({"session_id": req.session_id, "id": {"$in": req.file_ids}})
     return {"deleted": res.deleted_count}
 
 
 @api_router.post("/replace")
 async def replace_file(session_id: str = Form(...), file_id: str = Form(...), file: UploadFile = File(...)):
+    check_sid(session_id)
     d = await db.files.find_one({"id": file_id, "session_id": session_id})
     if not d:
         raise HTTPException(status_code=404, detail="File not found")
     ext = Path(file.filename).suffix.lower()
+    if ext not in ALLOWED_EXT:
+        raise HTTPException(status_code=400, detail=f"Unsupported file type: {ext or 'unknown'}")
     ftype = file_type_for(ext)
-    content = await file.read()
+    content = await read_capped(file)
     tmp = temp_from_bytes(content, ext)
     try:
         encrypted = detect_encrypted(tmp, ftype)
@@ -340,6 +383,7 @@ async def replace_file(session_id: str = Form(...), file_id: str = Form(...), fi
 
 @api_router.post("/merge-pdf")
 async def merge_pdf(req: MergeRequest):
+    check_sid(req.session_id)
     docs = []
     for fid in req.file_ids:
         d = await db.files.find_one({"id": fid, "session_id": req.session_id})
@@ -376,16 +420,19 @@ async def merge_pdf(req: MergeRequest):
 
 @api_router.get("/download/{session_id}/{file_id}")
 async def download_file(session_id: str, file_id: str):
+    check_sid(session_id)
     d = await db.files.find_one({"id": file_id, "session_id": session_id})
     if not d:
         raise HTTPException(status_code=404, detail="File not found")
     data = get_object(d["storage_path"])
-    headers = {"Content-Disposition": f'attachment; filename="{d["original_name"]}"'}
+    fn = safe_filename(d["original_name"])
+    headers = {"Content-Disposition": f"attachment; filename=\"{fn}\"; filename*=UTF-8''{quote(fn)}"}
     return StreamingResponse(io.BytesIO(data), media_type="application/octet-stream", headers=headers)
 
 
 @api_router.get("/download-zip/{session_id}")
 async def download_zip(session_id: str, only: str = "unlocked"):
+    check_sid(session_id)
     docs = await db.files.find({"session_id": session_id}).sort("created_at", 1).to_list(1000)
     if only == "unlocked":
         docs = [d for d in docs if d.get("status") in ("unlocked", "ready")]
@@ -411,6 +458,7 @@ async def download_zip(session_id: str, only: str = "unlocked"):
 
 @api_router.delete("/session/{session_id}")
 async def clear_session(session_id: str):
+    check_sid(session_id)
     await db.files.delete_many({"session_id": session_id})
     return {"cleared": True}
 
