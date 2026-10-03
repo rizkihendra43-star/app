@@ -1,0 +1,114 @@
+{
+  "project_title": "Mass PDF & Excel Password Unlocker & Manager",
+  "app_type": "saas_app",
+  "archetype": "The Performance Pro & Swiss Precision Utility",
+  "theme_strategy": {
+    "default_mode": "dark",
+    "toggle_available": true,
+    "description": "Tactical dark theme with slate navy surfaces (#0F172A), deep obsidian (#020617), high-contrast data rows, and vibrant signal badges (Emerald for unlocked, Amber for matching, Rose for locked/error, Indigo for matched)."
+  },
+  "typography": {
+    "headings_font": "Plus Jakarta Sans, sans-serif",
+    "body_font": "Outfit, sans-serif",
+    "mono_font": "JetBrains Mono, monospace",
+    "font_imports": [
+      "https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@300;400;500;600&family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap"
+    ],
+    "hierarchy": {
+      "h1_hero": "text-3xl sm:text-4xl lg:text-5xl font-extrabold tracking-tight",
+      "h2_section": "text-xl sm:text-2xl font-bold tracking-tight",
+      "h3_card": "text-lg font-semibold tracking-normal",
+      "h4_sub": "text-base font-medium",
+      "body": "text-sm text-slate-300 leading-relaxed",
+      "caption_label": "text-xs uppercase tracking-wider font-semibold text-slate-400"
+    }
+  },
+  "colors": {
+    "dark": {
+      "bg_root": "#020617",
+      "bg_surface": "#0F172A",
+      "bg_card": "#1E293B",
+      "bg_card_hover": "#334155",
+      "border": "#334155",
+      "border_highlight": "#475569",
+      "text_primary": "#F8FAFC",
+      "text_secondary": "#94A3B8",
+      "text_muted": "#64748B",
+      "accent_primary": "#6366F1",
+      "accent_hover": "#4F46E5",
+      "status": {
+        "locked": { "bg": "rgba(225, 29, 72, 0.15)", "text": "#FDA4AF", "border": "rgba(225, 29, 72, 0.3)" },
+        "matched": { "bg": "rgba(99, 102, 241, 0.15)", "text": "#A5B4FC", "border": "rgba(99, 102, 241, 0.3)" },
+        "unlocked": { "bg": "rgba(16, 185, 129, 0.15)", "text": "#6EE7B7", "border": "rgba(16, 185, 129, 0.3)" },
+        "error": { "bg": "rgba(244, 63, 94, 0.2)", "text": "#FECDD3", "border": "rgba(244, 63, 94, 0.4)" }
+      }
+    },
+    "light": {
+      "bg_root": "#F8FAFC",
+      "bg_surface": "#FFFFFF",
+      "bg_card": "#F1F5F9",
+      "bg_card_hover": "#E2E8F0",
+      "border": "#E2E8F0",
+      "border_highlight": "#CBD5E1",
+      "text_primary": "#0F172A",
+      "text_secondary": "#475569",
+      "text_muted": "#94A3B8",
+      "accent_primary": "#4F46E5",
+      "accent_hover": "#4338CA",
+      "status": {
+        "locked": { "bg": "#FFE4E6", "text": "#E11D48", "border": "#FDA4AF" },
+        "matched": { "bg": "#EEF2FF", "text": "#4F46E5", "border": "#C7D2FE" },
+        "unlocked": { "bg": "#ECFDF5", "text": "#059669", "border": "#A7F3D0" },
+        "error": { "bg": "#FFF1F2", "text": "#E11D48", "border": "#FECDD3" }
+      }
+    }
+  },
+  "layout_architecture": {
+    "grid_system": "MODE B: High Density Command & File Queue",
+    "top_navbar": "Sticky header with app brand logo, active task counter (Files loaded, Unlocked count, Batch status), global actions (Download Unlocked ZIP, Merge PDFs), and Theme Toggle",
+    "main_workspace": {
+      "upper_section": "Two-column grid (lg:grid-cols-12 gap-6): Column 1 (span 7) = Drag & Drop File Intake Zone with batch stats; Column 2 (span 5) = Bulk Password List Input Panel (textarea + preset import + quick password tester)",
+      "lower_section": "Full width File Management Data Table with filtering (All, Locked, Matched, Unlocked, Error), search, batch selection, row actions (Test Password, Unlock, Merge PDF, Replace File, Delete File)"
+    }
+  },
+  "key_features_to_implement": [
+    "Bulk Upload PDF and Excel (.pdf, .xlsx, .xls, .csv) with Drag & Drop or File Picker",
+    "Bulk Password List Input (one per line, comma-separated, or paste) with quick import/save presets",
+    "Automatic Password Matching Engine (simulated or client-side batch validation testing each password against protected files)",
+    "Password Removal / Unlocking Workflow (converts matched password to permanently unlocked output file)",
+    "Bulk Save / Download as ZIP (maintaining exact original file names, extension, and structure)",
+    "Individual File Action Controls: Delete file, Replace file with new version, Re-try custom password, Preview status details",
+    "PDF Merger Tool (selectable PDFs to merge into a single combined PDF document)",
+    "Interactive Batch Operations: Select All, Bulk Delete, Bulk Unlock, Export Report (JSON/CSV)",
+    "Real-time progress bars and toast alerts (Sonner) for password matching and file decryption processes"
+  ],
+  "component_guidelines": {
+    "buttons": "Pill or clean rectangular with rounded-lg. High contrast primary CTA with hover scale and micro shadow.",
+    "inputs": "Shadcn Textarea and Input customized with JetBrains Mono for password input. Clear active ring state.",
+    "badges": "Pill badges with indicator dot (pulse animation on matching in progress).",
+    "tables": "Dense, clean border-b table rows with hover highlight (`hover:bg-slate-800/50`). Row selector checkboxes.",
+    "dialogs": "Shadcn Dialog for PDF Merger preview/modal and File Replace dialog."
+  },
+  "testing_attributes": {
+    "rule": "Every interactive element must include data-testid attribute in kebab-case format.",
+    "examples": {
+      "file_upload_zone": "data-testid=\"file-upload-dropzone\"",
+      "file_upload_input": "data-testid=\"file-upload-input\"",
+      "password_list_input": "data-testid=\"password-list-textarea\"",
+      "match_passwords_button": "data-testid=\"match-passwords-btn\"",
+      "unlock_all_button": "data-testid=\"unlock-all-btn\"",
+      "download_zip_button": "data-testid=\"download-zip-btn\"",
+      "merge_pdf_button": "data-testid=\"merge-pdf-btn\"",
+      "delete_file_button": "data-testid=\"delete-file-btn-{id}\"",
+      "replace_file_button": "data-testid=\"replace-file-btn-{id}\"",
+      "theme_toggle": "data-testid=\"theme-toggle-btn\""
+    }
+  },
+  "UNIVERSAL GUIDELINES FOR MAIN AGENT": [
+    "You tend to converge toward generic outputs. Create creative, distinctive frontends that surprise and delight.",
+    "Do not use transparent backgrounds without backdrop-blur on headers or modals.",
+    "Always use exact data-testid attributes for testing.",
+    "Provide clear interactive states (hover, focus, disabled, active) with smooth CSS transitions.",
+    "Ensure zero horizontal scroll on default viewports and robust mobile responsive layout."
+  ]
+}
