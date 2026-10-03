@@ -13,7 +13,7 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import {
-  ShieldCheck, KeyRound, Unlock, FileArchive, GitMerge, Moon, Sun, Loader2, Sparkles, Layers,
+  ShieldCheck, KeyRound, Unlock, FileArchive, GitMerge, Moon, Sun, Loader2, Sparkles, Layers, Trash2,
 } from "lucide-react";
 import { api, getSessionId } from "@/lib/api";
 import { Dropzone } from "@/components/Dropzone";
@@ -50,6 +50,7 @@ export default function App() {
   const [mergeName, setMergeName] = useState("merged.pdf");
   const [merging, setMerging] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", dark);
@@ -152,6 +153,21 @@ export default function App() {
       await refresh();
     } catch (e) {
       toast.error("Replace failed");
+    }
+  };
+
+  const handleBulkDelete = async () => {
+    const ids = [...selected];
+    if (ids.length === 0) return;
+    try {
+      const res = await api.removeMany(sid, ids);
+      toast.success(`${res.deleted} file(s) deleted`);
+      setSelected(new Set());
+      await refresh();
+    } catch (e) {
+      toast.error("Bulk delete failed");
+    } finally {
+      setBulkDeleteOpen(false);
     }
   };
 
@@ -293,6 +309,16 @@ export default function App() {
               <Layers className="h-5 w-5 text-primary" />
               <h2 className="font-display text-xl font-bold tracking-tight">File Queue</h2>
             </div>
+            {selected.size > 0 && (
+              <Button
+                data-testid="delete-selected-btn"
+                variant="outline"
+                className="gap-2 border-destructive/40 text-rose-400 hover:bg-destructive/10 hover:text-rose-300"
+                onClick={() => setBulkDeleteOpen(true)}
+              >
+                <Trash2 className="h-4 w-4" /> Delete Selected ({selected.size})
+              </Button>
+            )}
             <div className="ml-auto flex flex-wrap gap-1.5 rounded-xl border border-border bg-card/40 p-1">
               {FILTERS.map((f) => (
                 <button
@@ -372,6 +398,28 @@ export default function App() {
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
               Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Bulk delete confirm */}
+      <AlertDialog open={bulkDeleteOpen} onOpenChange={setBulkDeleteOpen}>
+        <AlertDialogContent data-testid="bulk-delete-dialog">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="font-display">Delete {selected.size} selected file(s)?</AlertDialogTitle>
+            <AlertDialogDescription>
+              The selected files will be removed from the queue. This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              data-testid="confirm-bulk-delete-btn"
+              onClick={handleBulkDelete}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Delete {selected.size}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

@@ -303,6 +303,12 @@ async def delete_file(session_id: str, file_id: str):
     return {"deleted": True, "id": file_id}
 
 
+@api_router.post("/delete-bulk")
+async def delete_bulk(req: UnlockRequest):
+    res = await db.files.delete_many({"session_id": req.session_id, "id": {"$in": req.file_ids}})
+    return {"deleted": res.deleted_count}
+
+
 @api_router.post("/replace")
 async def replace_file(session_id: str = Form(...), file_id: str = Form(...), file: UploadFile = File(...)):
     d = await db.files.find_one({"id": file_id, "session_id": session_id})

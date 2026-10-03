@@ -34,6 +34,8 @@ export const api = {
   unlock: (sid, file_ids) =>
     client.post("/unlock", { session_id: sid, file_ids }).then((r) => r.data),
   remove: (sid, id) => client.delete(`/file/${sid}/${id}`).then((r) => r.data),
+  removeMany: (sid, file_ids) =>
+    client.post("/delete-bulk", { session_id: sid, file_ids }).then((r) => r.data),
   replace: (sid, id, file) => {
     const fd = new FormData();
     fd.append("session_id", sid);
