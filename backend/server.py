@@ -6,6 +6,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import io
 import re
+import asyncio
 import zipfile
 import logging
 import tempfile
@@ -83,6 +84,7 @@ ALLOWED_EXT = PDF_EXT | EXCEL_EXT
 SID_RE = re.compile(r'^[A-Za-z0-9_-]{8,64}$')
 MAX_FILE_BYTES = 50 * 1024 * 1024  # 50 MB per file
 MAX_FILES = 100
+SCAN_CONCURRENCY = 8  # files scanned/unlocked in parallel
 
 
 def check_sid(sid: str):
@@ -162,12 +164,36 @@ def try_password(path: str, ftype: str, pw: str) -> bool:
         if ftype == 'excel':
             with open(path, 'rb') as f:
                 office = msoffcrypto.OfficeFile(f)
-                office.load_key(password=pw)
-                office.decrypt(io.BytesIO())
+                office.load_key(password=pw, verify_password=True)
             return True
     except Exception:
         return False
     return False
+
+
+def scan_file_sync(d: dict, pws: list) -> Optional[str]:
+    """Download one file once and try all passwords; runs in a worker thread."""
+    data = get_object(d["storage_path"])
+    tmp = temp_from_bytes(data, d["ext"])
+    try:
+        for pw in pws:
+            if try_password(tmp, d["file_type"], pw):
+                return pw
+        return None
+    finally:
+        os.unlink(tmp)
+
+
+def unlock_file_sync(d: dict) -> int:
+    """Download, strip password, re-upload; runs in a worker thread. Returns new size."""
+    data = get_object(d["storage_path"])
+    tmp = temp_from_bytes(data, d["ext"])
+    try:
+        out = unlock_to_bytes(tmp, d["file_type"], d["matched_password"])
+        put_object(d["storage_path"], out)
+        return len(out)
+    finally:
+        os.unlink(tmp)
 
 
 def unlock_to_bytes(path: str, ftype: str, pw: str) -> bytes:
@@ -283,25 +309,21 @@ async def match_passwords(req: MatchRequest):
     check_sid(req.session_id)
     pws = [p.strip() for p in req.passwords if p.strip()]
     docs = await db.files.find({"session_id": req.session_id}).to_list(1000)
-    matched_count = 0
-    for d in docs:
-        if not d.get("encrypted") or d.get("status") == "unlocked":
-            continue
-        data = get_object(d["storage_path"])
-        tmp = temp_from_bytes(data, d["ext"])
-        try:
-            found = None
-            for pw in pws:
-                if try_password(tmp, d["file_type"], pw):
-                    found = pw
-                    break
-        finally:
-            os.unlink(tmp)
+    targets = [d for d in docs if d.get("encrypted") and d.get("status") != "unlocked"]
+
+    sem = asyncio.Semaphore(SCAN_CONCURRENCY)
+
+    async def worker(d):
+        async with sem:
+            found = await asyncio.to_thread(scan_file_sync, d, pws)
         if found is not None:
-            matched_count += 1
             await db.files.update_one({"id": d["id"]}, {"$set": {"status": "matched", "matched_password": found}})
         else:
             await db.files.update_one({"id": d["id"]}, {"$set": {"status": "locked", "matched_password": None}})
+        return found
+
+    results = await asyncio.gather(*[worker(d) for d in targets])
+    matched_count = sum(1 for r in results if r is not None)
     docs = await db.files.find({"session_id": req.session_id}).sort("created_at", 1).to_list(1000)
     return {"matched_count": matched_count, "files": [public_file(d) for d in docs]}
 
@@ -309,25 +331,29 @@ async def match_passwords(req: MatchRequest):
 @api_router.post("/unlock")
 async def unlock(req: UnlockRequest):
     check_sid(req.session_id)
-    unlocked = 0
-    errors = []
+    docs = []
     for fid in req.file_ids:
         d = await db.files.find_one({"id": fid, "session_id": req.session_id})
-        if not d or d.get("status") != "matched" or not d.get("matched_password"):
-            continue
-        data = get_object(d["storage_path"])
-        tmp = temp_from_bytes(data, d["ext"])
-        try:
-            out = unlock_to_bytes(tmp, d["file_type"], d["matched_password"])
-            put_object(d["storage_path"], out)
-            await db.files.update_one({"id": fid}, {"$set": {"status": "unlocked", "encrypted": False, "size": len(out)}})
-            unlocked += 1
-        except Exception as e:
-            logging.exception("unlock failed")
-            errors.append({"id": fid, "error": "Failed to unlock file"})
-            await db.files.update_one({"id": fid}, {"$set": {"status": "error"}})
-        finally:
-            os.unlink(tmp)
+        if d and d.get("status") == "matched" and d.get("matched_password"):
+            docs.append(d)
+
+    sem = asyncio.Semaphore(SCAN_CONCURRENCY)
+    errors = []
+
+    async def worker(d):
+        async with sem:
+            try:
+                new_size = await asyncio.to_thread(unlock_file_sync, d)
+                await db.files.update_one({"id": d["id"]}, {"$set": {"status": "unlocked", "encrypted": False, "size": new_size}})
+                return True
+            except Exception:
+                logging.exception("unlock failed")
+                errors.append({"id": d["id"], "error": "Failed to unlock file"})
+                await db.files.update_one({"id": d["id"]}, {"$set": {"status": "error"}})
+                return False
+
+    results = await asyncio.gather(*[worker(d) for d in docs])
+    unlocked = sum(1 for r in results if r)
     docs = await db.files.find({"session_id": req.session_id}).sort("created_at", 1).to_list(1000)
     return {"unlocked": unlocked, "errors": errors, "files": [public_file(d) for d in docs]}
 
