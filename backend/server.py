@@ -196,6 +196,51 @@ def unlock_file_sync(d: dict) -> int:
         os.unlink(tmp)
 
 
+def detect_and_store_sync(content: bytes, ext: str, ftype: str, storage_path: str):
+    """Detect encryption + upload to object storage; runs in a worker thread."""
+    tmp = temp_from_bytes(content, ext)
+    try:
+        encrypted = detect_encrypted(tmp, ftype)
+    finally:
+        os.unlink(tmp)
+    result = put_object(storage_path, content)
+    return encrypted, result["path"]
+
+
+def merge_pdfs_sync(docs: list, storage_path: str):
+    """Merge PDFs + upload; runs in a worker thread."""
+    writer = PdfWriter()
+    for d in docs:
+        data = get_object(d["storage_path"])
+        reader = PdfReader(io.BytesIO(data))
+        for page in reader.pages:
+            writer.add_page(page)
+    out = io.BytesIO()
+    writer.write(out)
+    out_bytes = out.getvalue()
+    result = put_object(storage_path, out_bytes, "application/pdf")
+    return result["path"], len(out_bytes)
+
+
+def build_zip_sync(docs: list) -> bytes:
+    """Download all files + build a ZIP; runs in a worker thread."""
+    buf = io.BytesIO()
+    used = {}
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for d in docs:
+            data = get_object(d["storage_path"])
+            base = d["original_name"]
+            name = base
+            if base in used:
+                used[base] += 1
+                name = f"{Path(base).stem} ({used[base]}){Path(base).suffix}"
+            else:
+                used[base] = 0
+            zf.writestr(name, data)
+    buf.seek(0)
+    return buf.getvalue()
+
+
 def unlock_to_bytes(path: str, ftype: str, pw: str) -> bytes:
     if ftype == 'pdf':
         out = io.BytesIO()
@@ -279,15 +324,10 @@ async def upload_files(session_id: str = Form(...), files: List[UploadFile] = Fi
             raise HTTPException(status_code=400, detail=f"Unsupported file type: {ext or 'unknown'}")
         ftype = file_type_for(ext)
         content = await read_capped(up)
-        tmp = temp_from_bytes(content, ext)
-        try:
-            encrypted = detect_encrypted(tmp, ftype)
-        finally:
-            os.unlink(tmp)
         fdoc = FileDoc(session_id=session_id, original_name=up.filename, ext=ext, file_type=ftype)
         storage_path = f"{APP_NAME}/{session_id}/{fdoc.id}{ext}"
-        result = put_object(storage_path, content)
-        fdoc.storage_path = result["path"]
+        encrypted, stored_path = await asyncio.to_thread(detect_and_store_sync, content, ext, ftype, storage_path)
+        fdoc.storage_path = stored_path
         fdoc.size = len(content)
         fdoc.encrypted = encrypted
         fdoc.status = "locked" if encrypted else "ready"
@@ -396,16 +436,11 @@ async def replace_file(session_id: str = Form(...), file_id: str = Form(...), fi
         raise HTTPException(status_code=400, detail=f"Unsupported file type: {ext or 'unknown'}")
     ftype = file_type_for(ext)
     content = await read_capped(file)
-    tmp = temp_from_bytes(content, ext)
-    try:
-        encrypted = detect_encrypted(tmp, ftype)
-    finally:
-        os.unlink(tmp)
     storage_path = f"{APP_NAME}/{session_id}/{file_id}{ext}"
-    result = put_object(storage_path, content)
+    encrypted, stored_path = await asyncio.to_thread(detect_and_store_sync, content, ext, ftype, storage_path)
     await db.files.update_one({"id": file_id}, {"$set": {
         "original_name": file.filename,
-        "storage_path": result["path"],
+        "storage_path": stored_path,
         "ext": ext,
         "file_type": ftype,
         "size": len(content),
@@ -432,23 +467,15 @@ async def merge_pdf(req: MergeRequest):
         docs.append(d)
     if len(docs) < 2:
         raise HTTPException(status_code=400, detail="Select at least 2 PDF files to merge")
-    writer = PdfWriter()
-    for d in docs:
-        data = get_object(d["storage_path"])
-        reader = PdfReader(io.BytesIO(data))
-        for page in reader.pages:
-            writer.add_page(page)
-    out = io.BytesIO()
-    writer.write(out)
-    out_bytes = out.getvalue()
     out_name = req.output_name if req.output_name.lower().endswith('.pdf') else req.output_name + '.pdf'
     fdoc = FileDoc(
         session_id=req.session_id, original_name=out_name, ext='.pdf', file_type='pdf',
-        encrypted=False, status='unlocked', is_merged=True, size=len(out_bytes),
+        encrypted=False, status='unlocked', is_merged=True,
     )
     storage_path = f"{APP_NAME}/{req.session_id}/{fdoc.id}.pdf"
-    result = put_object(storage_path, out_bytes, "application/pdf")
-    fdoc.storage_path = result["path"]
+    stored_path, out_size = await asyncio.to_thread(merge_pdfs_sync, docs, storage_path)
+    fdoc.storage_path = stored_path
+    fdoc.size = out_size
     doc = fdoc.model_dump()
     await db.files.insert_one(doc)
     return {"file": public_file(doc)}
@@ -460,7 +487,7 @@ async def download_file(session_id: str, file_id: str):
     d = await db.files.find_one({"id": file_id, "session_id": session_id})
     if not d:
         raise HTTPException(status_code=404, detail="File not found")
-    data = get_object(d["storage_path"])
+    data = await asyncio.to_thread(get_object, d["storage_path"])
     fn = safe_filename(d["original_name"])
     headers = {"Content-Disposition": f"attachment; filename=\"{fn}\"; filename*=UTF-8''{quote(fn)}"}
     return StreamingResponse(io.BytesIO(data), media_type="application/octet-stream", headers=headers)
@@ -474,22 +501,9 @@ async def download_zip(session_id: str, only: str = "unlocked"):
         docs = [d for d in docs if d.get("status") in ("unlocked", "ready")]
     if not docs:
         raise HTTPException(status_code=404, detail="No files available to download")
-    buf = io.BytesIO()
-    used = {}
-    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
-        for d in docs:
-            data = get_object(d["storage_path"])
-            base = d["original_name"]
-            name = base
-            if base in used:
-                used[base] += 1
-                name = f"{Path(base).stem} ({used[base]}){Path(base).suffix}"
-            else:
-                used[base] = 0
-            zf.writestr(name, data)
-    buf.seek(0)
+    data = await asyncio.to_thread(build_zip_sync, docs)
     headers = {"Content-Disposition": 'attachment; filename="unlocked_files.zip"'}
-    return StreamingResponse(buf, media_type="application/zip", headers=headers)
+    return StreamingResponse(io.BytesIO(data), media_type="application/zip", headers=headers)
 
 
 @api_router.delete("/session/{session_id}")
@@ -497,6 +511,16 @@ async def clear_session(session_id: str):
     check_sid(session_id)
     await db.files.delete_many({"session_id": session_id})
     return {"cleared": True}
+
+
+@api_router.get("/health")
+async def api_health():
+    return {"status": "ok"}
+
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
 
 
 app.include_router(api_router)
