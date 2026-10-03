@@ -210,3 +210,114 @@ class TestExtras:
             requests.delete(f"{API}/session/{s}", timeout=30)
         except Exception:
             pass
+
+
+
+# ---- Iteration 3: Concurrency correctness ----
+class TestConcurrency:
+    """Each file must get its own correct password; no cross-contamination."""
+
+    @pytest.fixture(scope="class")
+    def multi_locked(self):
+        import pikepdf
+        from reportlab.pdfgen import canvas
+        if not os.path.exists(PLAIN_PDF):
+            c = canvas.Canvas(PLAIN_PDF); c.drawString(100, 750, "secret"); c.save()
+        paths = []
+        passwords = []
+        for i in range(6):
+            pw = f"secret{i}"
+            p = f"/tmp/locked_{i}.pdf"
+            with pikepdf.open(PLAIN_PDF) as pdf:
+                pdf.save(p, encryption=pikepdf.Encryption(owner=pw, user=pw))
+            paths.append(p)
+            passwords.append(pw)
+        return paths, passwords
+
+    @pytest.fixture(scope="class")
+    def csid(self):
+        s = f"conc-{uuid.uuid4().hex[:16]}"
+        yield s
+        try:
+            requests.delete(f"{API}/session/{s}", timeout=30)
+        except Exception:
+            pass
+
+    def test_concurrent_match_each_file_own_password(self, csid, multi_locked):
+        paths, passwords = multi_locked
+        # Upload all locked files
+        upload_files = []
+        for i, p in enumerate(paths):
+            with open(p, "rb") as f:
+                upload_files.append(("files", (f"locked_{i}.pdf", f.read(), "application/pdf")))
+        # Also upload one that will NOT match
+        with open(paths[0], "rb") as f:
+            upload_files.append(("files", ("locked_nomatch.pdf", f.read(), "application/pdf")))
+        # Re-encrypt the nomatch with a unique password
+        import pikepdf
+        nomatch_path = "/tmp/locked_nomatch.pdf"
+        with pikepdf.open(PLAIN_PDF) as pdf:
+            pdf.save(nomatch_path, encryption=pikepdf.Encryption(owner="zzz_unique_999", user="zzz_unique_999"))
+        with open(nomatch_path, "rb") as f:
+            upload_files[-1] = ("files", ("locked_nomatch.pdf", f.read(), "application/pdf"))
+
+        r = requests.post(f"{API}/upload", data={"session_id": csid}, files=upload_files, timeout=120)
+        assert r.status_code == 200, r.text
+        uploaded = r.json()["files"]
+        assert len(uploaded) == 7
+        # Map filename -> id
+        name_to_id = {f["original_name"]: f["id"] for f in uploaded}
+
+        # Shuffle passwords + decoys
+        import time
+        pw_list = ["decoy1", "x", "wrong"] + passwords + ["decoy2", "nope"]
+        t0 = time.time()
+        r = requests.post(f"{API}/match-passwords", json={"session_id": csid, "passwords": pw_list}, timeout=120)
+        elapsed = time.time() - t0
+        assert r.status_code == 200, r.text
+        body = r.json()
+        print(f"match elapsed={elapsed:.2f}s matched_count={body['matched_count']}")
+        assert body["matched_count"] == 6, body
+
+        # Verify EACH locked_i.pdf got secret{i} and no cross-contamination
+        for i, pw in enumerate(passwords):
+            fid = name_to_id[f"locked_{i}.pdf"]
+            file_entry = next(f for f in body["files"] if f["id"] == fid)
+            assert file_entry["status"] == "matched", file_entry
+            assert file_entry["matched_password"] == pw, (
+                f"File locked_{i}.pdf expected password {pw!r} got {file_entry.get('matched_password')!r}"
+            )
+
+        # Non-matching file stays locked
+        nm_id = name_to_id["locked_nomatch.pdf"]
+        nm = next(f for f in body["files"] if f["id"] == nm_id)
+        assert nm["status"] == "locked"
+        assert not nm.get("matched_password")
+
+    def test_concurrent_unlock_all_matched(self, csid):
+        # List current files
+        r = requests.get(f"{API}/files/{csid}", timeout=30)
+        assert r.status_code == 200
+        files = r.json()["files"]
+        matched_ids = [f["id"] for f in files if f["status"] == "matched"]
+        all_ids = [f["id"] for f in files]
+        assert len(matched_ids) == 6
+
+        r = requests.post(f"{API}/unlock", json={"session_id": csid, "file_ids": all_ids}, timeout=120)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["unlocked"] == 6, body
+
+        # Every previously-matched file is now unlocked and encrypted=False
+        for f in body["files"]:
+            if f["id"] in matched_ids:
+                assert f["status"] == "unlocked", f
+                assert f["encrypted"] is False, f
+
+        # Download each and verify opens without password
+        import pikepdf
+        for fid in matched_ids:
+            dr = requests.get(f"{API}/download/{csid}/{fid}", timeout=60)
+            assert dr.status_code == 200
+            with pikepdf.open(io.BytesIO(dr.content)) as pdf:
+                assert len(pdf.pages) >= 1
