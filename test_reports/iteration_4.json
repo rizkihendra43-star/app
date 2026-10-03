@@ -1,0 +1,31 @@
+{
+  "summary": "Iteration 4 full-stack test of UnlockVault progress UI + transient 'scanning'/'unlocking' statuses + ErrorBoundary. Added test_transient_status.py (2 tests) that polls GET /api/files during match/unlock and asserts files pass through 'scanning' and 'unlocking' states respectively. All 26 backend tests pass. Frontend Playwright e2e uploaded 6 locked PDFs (/tmp/lk0..lk5.pdf), ran Match Passwords with 60 decoys + 6 real passwords, verified progress-banner / progress-bar / progress-count (saw '0/6') appeared then disappeared, all 6 rows became Matched, then Unlock All showed banner labeled 'Removing passwords…', all 6 rows ended as Unlocked. No page/console errors, ErrorBoundary not rendered. Filters (All/Locked/Matched/Unlocked/Error), theme toggle, Download ZIP enablement all work.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_unlockvault.py",
+    "/app/backend/tests/test_transient_status.py",
+    "/app/test_reports/pytest/iteration_4.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Backend 'scanning'/'unlocking' statuses are correctly set via update_many BEFORE asyncio.gather and reset per-file inside each worker — observable via GET /api/files, confirmed under load (60 decoy passwords).",
+    "Frontend runWithProgress() uses a 600ms setInterval poll; progress bar shows indeterminate (15%) until first inflight observed, then advances. Works as designed. Minor: when scanning is faster than one poll interval the counter may stay at 0/total briefly, but the banner still appears — tested with lengthened password list to confirm counter updates.",
+    "ErrorBoundary wraps <App/> in index.js, renders a safe fallback with data-testid=error-boundary + reload button; verified it does NOT render during normal operation.",
+    "Pre-existing minor warning (iteration 3) about class-scoped fixture as instance method remains — cosmetic only."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_transient_status.py"
+  ],
+  "success_rate": {"backend": "100% (26/26)", "frontend": "100% of critical flows"},
+  "test_credentials": "No auth. Session IDs auto-generated. Locked PDFs: /tmp/lk0..lk5.pdf (passwords secret0..secret5), /tmp/locked.pdf (pw123).",
+  "seed_data_creation": "Dynamic /tmp/tr_locked_{0..5}.pdf via pikepdf inside test_transient_status fixture.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend suite in /app/backend/tests/ now has test_unlockvault.py (24 tests: security, full flow, extras, concurrency) + test_transient_status.py (2 tests: scanning/unlocking status observability). Frontend verified end-to-end with 6-file locked workflow — progress-banner, progress-bar, progress-count testids all present and functional. ErrorBoundary verified non-triggering on happy path. Checkboxes in FileTable are shadcn (role=checkbox buttons, not <input type=checkbox>); if next agent needs to toggle them, use get_by_role('checkbox') not input[type=checkbox].",
+  "rca of the issue": "N/A — no bugs. Original user complaint ('screen goes blank', 'can't see progress') is resolved: ErrorBoundary prevents blank screens on render errors, and the sticky progress banner with live done/total counter is working for both match and unlock operations."
+}
