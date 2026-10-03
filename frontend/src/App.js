@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
+import { Progress } from "@/components/ui/progress";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from "@/components/ui/dialog";
@@ -51,6 +52,7 @@ export default function App() {
   const [merging, setMerging] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
+  const [progress, setProgress] = useState({ active: false, label: "", done: 0, total: 0 });
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", dark);
@@ -96,15 +98,42 @@ export default function App() {
     }
   };
 
+  const runWithProgress = async ({ label, total, activeStatus, request }) => {
+    setProgress({ active: true, label, done: 0, total });
+    let started = false;
+    const timer = setInterval(async () => {
+      try {
+        const fl = await api.listFiles(sid);
+        setFiles(fl);
+        const inflight = fl.filter((f) => f.status === activeStatus).length;
+        if (inflight > 0) started = true;
+        setProgress((p) => ({ ...p, done: started ? Math.max(p.done, total - inflight) : 0 }));
+      } catch {}
+    }, 600);
+    try {
+      return await request();
+    } finally {
+      clearInterval(timer);
+      setProgress({ active: false, label: "", done: 0, total: 0 });
+    }
+  };
+
   const handleMatch = async () => {
     if (pwList.length === 0) return toast.error("Enter at least one password");
+    const total = files.filter((f) => f.status === "locked").length;
     setMatching(true);
     try {
-      const res = await api.match(sid, pwList);
+      const res = await runWithProgress({
+        label: "Scanning passwords…",
+        total,
+        activeStatus: "scanning",
+        request: () => api.match(sid, pwList),
+      });
       setFiles(res.files);
       toast.success(`${res.matched_count} file(s) matched a password`);
     } catch (e) {
       toast.error("Matching failed");
+      await refresh();
     } finally {
       setMatching(false);
     }
@@ -115,11 +144,17 @@ export default function App() {
     if (ids.length === 0) return toast.error("No matched files to unlock");
     setUnlocking(true);
     try {
-      const res = await api.unlock(sid, ids);
+      const res = await runWithProgress({
+        label: "Removing passwords…",
+        total: ids.length,
+        activeStatus: "unlocking",
+        request: () => api.unlock(sid, ids),
+      });
       setFiles(res.files);
       toast.success(`${res.unlocked} file(s) unlocked — no password needed anymore`);
     } catch (e) {
       toast.error("Unlock failed");
+      await refresh();
     } finally {
       setUnlocking(false);
     }
@@ -252,6 +287,29 @@ export default function App() {
           </div>
         </div>
       </header>
+
+      {/* Processing progress banner */}
+      {progress.active && (
+        <div
+          data-testid="progress-banner"
+          className="sticky top-[61px] z-20 border-b border-border bg-primary/10 backdrop-blur-xl"
+        >
+          <div className="mx-auto flex max-w-[1400px] items-center gap-4 px-5 py-3">
+            <Loader2 className="h-4 w-4 shrink-0 animate-spin text-primary" />
+            <span className="shrink-0 text-sm font-semibold text-foreground">{progress.label}</span>
+            <div className="flex-1">
+              <Progress
+                data-testid="progress-bar"
+                value={progress.total > 0 ? Math.min(100, (progress.done / progress.total) * 100) : 15}
+                className="h-2"
+              />
+            </div>
+            <span data-testid="progress-count" className="shrink-0 font-mono-c text-sm text-muted-foreground">
+              {progress.done}/{progress.total}
+            </span>
+          </div>
+        </div>
+      )}
 
       <main className="mx-auto max-w-[1400px] px-5 py-8">
         {/* Upper section */}

@@ -137,7 +137,7 @@ export const FileTable = ({ files, selected, onToggle, onToggleAll, onDelete, on
                         size="icon"
                         className="h-8 w-8 text-muted-foreground hover:text-emerald-400 disabled:opacity-30"
                         title="Download"
-                        disabled={f.status === "locked" || f.status === "matched" || f.status === "error"}
+                        disabled={["locked", "matched", "error", "scanning", "unlocking"].includes(f.status)}
                         onClick={() => onDownload(f)}
                       >
                         <Download className="h-4 w-4" />

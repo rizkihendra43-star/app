@@ -310,6 +310,11 @@ async def match_passwords(req: MatchRequest):
     pws = [p.strip() for p in req.passwords if p.strip()]
     docs = await db.files.find({"session_id": req.session_id}).to_list(1000)
     targets = [d for d in docs if d.get("encrypted") and d.get("status") != "unlocked"]
+    if targets:
+        await db.files.update_many(
+            {"session_id": req.session_id, "id": {"$in": [t["id"] for t in targets]}},
+            {"$set": {"status": "scanning"}},
+        )
 
     sem = asyncio.Semaphore(SCAN_CONCURRENCY)
 
@@ -336,6 +341,11 @@ async def unlock(req: UnlockRequest):
         d = await db.files.find_one({"id": fid, "session_id": req.session_id})
         if d and d.get("status") == "matched" and d.get("matched_password"):
             docs.append(d)
+    if docs:
+        await db.files.update_many(
+            {"session_id": req.session_id, "id": {"$in": [d["id"] for d in docs]}},
+            {"$set": {"status": "unlocking"}},
+        )
 
     sem = asyncio.Semaphore(SCAN_CONCURRENCY)
     errors = []
